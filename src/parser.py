@@ -1,6 +1,11 @@
 import re
 import os
 
+
+# PARSER FUNCTIONS
+# it  extract (newid, title, body) from the raw Reuters .sgm files.
+
+
 def parse_sgm_file(filepath):
     """
     Parses one .sgm file and returns a list of (newid, title, body) tuples.
@@ -8,7 +13,6 @@ def parse_sgm_file(filepath):
     with open(filepath, "r", encoding="latin-1") as f:
         content = f.read()
 
-    # Split the file into individual <REUTERS>...</REUTERS> blocks
     documents = re.findall(r"<REUTERS.*?>.*?</REUTERS>", content, re.DOTALL)
 
     parsed_docs = []
@@ -27,15 +31,14 @@ def parse_document(doc_text):
     newid_match = re.search(r'NEWID="(\d+)"', doc_text)
     newid = newid_match.group(1) if newid_match else None
 
-    # TITLE is optional in some documents
+    
     title_match = re.search(r"<TITLE>(.*?)</TITLE>", doc_text, re.DOTALL)
     title = title_match.group(1) if title_match else ""
 
-    # BODY is optional too (some short "BRIEF" stories have no BODY)
     body_match = re.search(r"<BODY>(.*?)</BODY>", doc_text, re.DOTALL)
     body = body_match.group(1) if body_match else ""
 
-    # Clean stray SGML character references like &#3;
+
     title = re.sub(r"&#\d+;", "", title)
     body = re.sub(r"&#\d+;", "", body)
 
@@ -56,7 +59,29 @@ def parse_all_files(data_dir):
     return all_docs
 
 
+
+# TOKENIZER FUNCTION
+# it converts raw title/body text into a clean list of lowercase and punctuation tokens
+
+def tokenize(text):
+    """
+    Converts raw text into a list of clean, lowercase tokens.
+    Strips punctuation entirely; splits on anything that isn't a letter or digit.
+    """
+    text = text.lower()
+    tokens = re.findall(r"[a-z0-9]+", text)
+    return tokens
+
+
+
+# MAIN to test parsing and tokenization is working
+
+
 if __name__ == "__main__":
     docs = parse_all_files("data")
     print(f"Total documents parsed: {len(docs)}")
-    print("First document:", docs[0])
+
+    newid, title, body = docs[0]
+    full_text = title + " " + body
+    tokens = tokenize(full_text)
+    print("First 20 tokens:", tokens[:20])
