@@ -1,7 +1,6 @@
 # Diagnostic script: checks whether the sample query terms (dollar, dollars, wheat, gold) are among the 150 most frequent corpus terms used as stop words, 
 #to explain why 'dollar' loses documents in the compressed index.
 
-
 from reuters_parser import parse_all_files, tokenize_case_sensitive
 from compression import case_fold, remove_numbers, top_terms
 
