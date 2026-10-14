@@ -1,50 +1,33 @@
-from parser import parse_all_files, tokenize
+from reuters_parser import parse_all_files, tokenize
 
 
 def get_term_docid_pairs(doc):
-    """
-    Takes one (newid, title, body) document and returns a list of
-    (term, docID) pairs.
-    """
+    """Takes one (newid, title, body) document and returns (term, docID) pairs."""
     newid, title, body = doc
-    full_text = title + " " + body
-    tokens = tokenize(full_text)
-
-    # loop through tokens and pair each with newid
-    pairs = []
-    for token in tokens:
-        pairs.append((token, int(newid)))    
-
-    return pairs
+    tokens = tokenize(title + " " + body)
+    return [(token, int(newid)) for token in tokens]
 
 
 def build_term_docid_list(docs):
-    """
-    Loops through all documents and combines their (term, docID) pairs
-    into one big list F.
-    """
+    """Step 1: combines the pairs of all documents into one big list F."""
     F = []
     for doc in docs:
-        pairs = get_term_docid_pairs(doc)
-        F.extend(pairs)
-
+        F.extend(get_term_docid_pairs(doc))
     return F
 
-# Sort F and remove duplicates 
-def sort_and_dedupe(F):
-    """
-    Removes duplicate (term, docID) pairs and sorts the result.
-    """
-    unique_pairs = set(F)            # drops duplicates
-    sorted_F = sorted(unique_pairs)  # sorts by term, then by docID
-    return sorted_F
 
-# Turn sorted F into actual index (PostingLists) 
+def sort_and_dedupe(F):
+    """Step 2: sort F, then remove duplicates (duplicates are adjacent after sorting)."""
+    sorted_F = sorted(F)  # by term, then by numeric docID
+    deduped = []
+    for pair in sorted_F:
+        if not deduped or pair != deduped[-1]:
+            deduped.append(pair)
+    return deduped
+
+
 def build_index(sorted_F):
-    """
-    Converts sorted, deduped (term, docID) pairs into an inverted index:
-    a dictionary mapping each term to its postings list (sorted docIDs).
-    """
+    """Step 3: group docIDs of the same term into a postings list (hash table)."""
     index = {}
     for term, docid in sorted_F:
         if term not in index:
@@ -53,9 +36,8 @@ def build_index(sorted_F):
     return index
 
 
-# main to test if everything is working correctly
 if __name__ == "__main__":
-    docs = parse_all_files("data")
+    docs = parse_all_files()
     F = build_term_docid_list(docs)
     print(f"Total pairs in F: {len(F)}")
 
@@ -64,4 +46,8 @@ if __name__ == "__main__":
 
     index = build_index(sorted_F)
     print(f"Total unique terms in index: {len(index)}")
-    print("Postings list for 'cocoa':", index.get("cocoa"))
+    print("Docs containing 'cocoa':", len(index.get("cocoa", [])))
+
+    # Cleanup check: all four should print False
+    for junk in ["lt", "amp", "acumulative", "wasincluded"]:
+        print(f"'{junk}' in index:", junk in index)

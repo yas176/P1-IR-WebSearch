@@ -1,167 +1,145 @@
-from parser import parse_all_files, tokenize
-from naiveIndexer import sort_and_dedupe, build_index
-from query import single_term_query, and_query
+from collections import Counter
+from functools import lru_cache
 from nltk.stem import PorterStemmer
 
-
-
-# STOPWORD LISTS
-
-STOPWORDS_30 = [
-    "the", "of", "and", "a", "to", "in", "is", "it", "that", "was",
-    "for", "on", "are", "as", "with", "his", "they", "at", "be", "this",
-    "from", "i", "have", "or", "by", "one", "had", "not", "but", "what"
-]
-
-STOPWORDS_150 = STOPWORDS_30 + [
-    "all", "were", "we", "when", "your", "can", "said", "there", "use", "an",
-    "each", "which", "she", "do", "how", "their", "if", "will", "up", "other",
-    "about", "out", "many", "then", "them", "these", "so", "some", "her", "would",
-    "make", "like", "him", "into", "time", "has", "look", "two", "more", "write",
-    "go", "see", "number", "no", "way", "could", "people", "my", "than", "first",
-    "water", "been", "call", "who", "its", "now", "find", "long", "down", "day",
-    "did", "get", "come", "made", "may", "part", "over", "new", "sound", "take",
-    "only", "little", "work", "know", "place", "year", "live", "me", "back", "give",
-    "most", "very", "after", "thing", "our", "just", "name", "good", "sentence", "man",
-    "think", "say", "great", "where", "help", "through", "much", "before", "line", "right",
-    "too", "mean", "old", "any", "same", "tell", "boy", "follow", "came", "want",
-    "show", "also", "around", "form", "three", "small", "set", "put", "end", "does",
-    "another", "well", "large", "must", "big", "even", "such", "because", "turn", "here",
-    "why", "ask", "went", "men", "read", "need", "land", "different", "home", "us"
-]
-
-
-
-# Filter functions 
-
-def remove_numbers(tokens):
-    """
-    Removes purely numeric tokens.
-    """
-    return [t for t in tokens if not t.isdigit()]
-
-
-def remove_stopwords(tokens, stopword_list):
-    """
-    Removes any token found in the given stopword list.
-    """
-    stopword_set = set(stopword_list)
-    return [t for t in tokens if t not in stopword_set]
-
+from reuters_parser import parse_all_files, tokenize, tokenize_case_sensitive
+from naiveIndexer import build_term_docid_list, sort_and_dedupe, build_index
+from query import single_term_query, and_query
 
 stemmer = PorterStemmer()
 
+
+@lru_cache(maxsize=None)
+def stem_word(word):
+    return stemmer.stem(word)
+
+
+
+#  Filters (each works on one document's token list) 
+
+def remove_numbers(tokens):
+    return [t for t in tokens if not t.isdigit()]
+
+
+def case_fold(tokens):
+    return [t.lower() for t in tokens]
+
+
+def remove_stopwords(tokens, stop_set):
+    return [t for t in tokens if t not in stop_set]
+
+
 def stem_tokens(tokens):
-    """
-    Applies the Porter stemmer to each token.
-    """
-    return [stemmer.stem(t) for t in tokens]
+    return [stem_word(t) for t in tokens]
 
 
-
-# Helper to build one big token stream from all documents
-
-def get_all_tokens(docs):
-    """
-    Tokenizes every document and combines into one big list of all tokens.
-    """
-    all_tokens = []
-    for newid, title, body in docs:
-        full_text = title + " " + body
-        all_tokens.extend(tokenize(full_text))
-    return all_tokens
+def top_terms(token_lists, n):
+    """The n most frequent terms in the collection (used as the stop word list)."""
+    counts = Counter()
+    for tokens in token_lists:
+        counts.update(tokens)
+    return [term for term, _ in counts.most_common(n)]
 
 
+# Table computation
+
+def count_step(token_lists, transform):
+    """Returns (distinct terms, nonpositional postings) after applying transform to every doc."""
+    vocab = set()
+    postings = 0
+    for tokens in token_lists:
+        terms = set(transform(tokens))
+        postings += len(terms)   # one posting per distinct (term, doc) pair
+        vocab.update(terms)
+    return len(vocab), postings
 
 
-# Full Compression pipeline (for building the compressed index)
-
-def compress_tokens(tokens):
-    """
-    Applies the full compression pipeline: remove numbers, remove 150 stopwords, stem.
-    """
-    tokens = remove_numbers(tokens)
-    tokens = remove_stopwords(tokens, STOPWORDS_150)
-    tokens = stem_tokens(tokens)
-    return tokens
+def pct(new, ref):
+    return round((new - ref) / ref * 100)
 
 
-def get_compressed_pairs(doc):
-    """
-    Takes one (newid, title, body) document and returns (stemmed_term, docID) pairs.
-    """
+def print_table(rows):
+    """rows: list of (name, terms, postings, reference_row_index)."""
+    base_terms, base_post = rows[0][1], rows[0][2]
+    print(f"{'':<16}{'distinct terms':>38}{'nonpositional postings':>42}")
+    print(f"{'':<16}{'number':>14}{'D%':>8}{'T%':>8}{'number':>16}{'D%':>8}{'T%':>8}")
+    for name, terms, post, ref in rows:
+        if ref is None:
+            print(f"{name:<16}{terms:>14,}{'':>16}{post:>16,}")
+        else:
+            rt, rp = rows[ref][1], rows[ref][2]
+            print(f"{name:<16}{terms:>14,}{pct(terms, rt):>8}{pct(terms, base_terms):>8}"
+                  f"{post:>16,}{pct(post, rp):>8}{pct(post, base_post):>8}")
+
+
+# compressed index
+
+def get_compressed_pairs(doc, stop_set):
     newid, title, body = doc
-    newid = int(newid)
-    full_text = title + " " + body
-    tokens = tokenize(full_text)
-    compressed = compress_tokens(tokens)
-
-    pairs = []
-    for token in compressed:
-        pairs.append((token, newid))
-    return pairs
+    tokens = tokenize(title + " " + body)      # lowercase NLTK tokens
+    tokens = remove_numbers(tokens)
+    tokens = remove_stopwords(tokens, stop_set)
+    tokens = stem_tokens(tokens)
+    return [(t, int(newid)) for t in tokens]
 
 
-def build_compressed_term_docid_list(docs):
-    """
-    Loops through all documents, building compressed (term, docID) pairs.
-    """
+def build_compressed_index(docs, stop_set):
     F = []
     for doc in docs:
-        F.extend(get_compressed_pairs(doc))
-    return F
+        F.extend(get_compressed_pairs(doc, stop_set))
+    return build_index(sort_and_dedupe(F))
 
-
-
-# Main function to test the compression pipeline and re-run the 6 sample queries
 
 if __name__ == "__main__":
-    docs = parse_all_files("data")
-    tokens = get_all_tokens(docs)
+    docs = parse_all_files()
 
-    # Part 1: Compression table 
-    print(f"{'Step':<20}{'Distinct Terms':>15}")
+    # Case-sensitive token lists, one per document (the textbook's "unfiltered" is case-sensitive)
+    cs_lists = [tokenize_case_sensitive(title + " " + body) for _, title, body in docs]
 
-    unfiltered_vocab = set(tokens)
-    print(f"{'unfiltered':<20}{len(unfiltered_vocab):>15}")
+    # Stop word lists = most frequent terms of THIS collection (case-folded, no numbers)
+    folded_lists = [remove_numbers(case_fold(t)) for t in cs_lists]
+    stop30 = set(top_terms(folded_lists, 30))
+    stop150 = set(top_terms(folded_lists, 150))
+    print("30 most frequent terms (used as stop words):", sorted(stop30), "\n")
 
-    no_numbers = remove_numbers(tokens)
-    no_numbers_vocab = set(no_numbers)
-    print(f"{'no numbers':<20}{len(no_numbers_vocab):>15}")
+    steps = [
+        ("unfiltered",     lambda t: t, None),
+        ("no numbers",     remove_numbers, 0),
+        ("case folding",   lambda t: case_fold(remove_numbers(t)), 1),
+        ("30 stop words",  lambda t: remove_stopwords(case_fold(remove_numbers(t)), stop30), 2),
+        ("150 stop words", lambda t: remove_stopwords(case_fold(remove_numbers(t)), stop150), 2),
+        ("stemming",       lambda t: stem_tokens(remove_stopwords(case_fold(remove_numbers(t)), stop150)), 4),
+    ]
+    rows = []
+    for name, transform, ref in steps:
+        terms, post = count_step(cs_lists, transform)
+        rows.append((name, terms, post, ref))
+    print_table(rows)
 
-    case_folded_vocab = no_numbers_vocab
-    print(f"{'case folding':<20}{len(case_folded_vocab):>15}")
+    # Original vs compressed index on the 6 sample queries ----
+    original_index = build_index(sort_and_dedupe(build_term_docid_list(docs)))
+    compressed_index = build_compressed_index(docs, stop150)
+    print(f"\nOriginal index: {len(original_index)} terms | Compressed index: {len(compressed_index)} terms")
 
-    no_30_stop = remove_stopwords(no_numbers, STOPWORDS_30)
-    no_30_vocab = set(no_30_stop)
-    print(f"{'30 stop words':<20}{len(no_30_vocab):>15}")
+    singles = ["dollar", "wheat", "gold"]
+    pairs = [("gold", "dollar"), ("wheat", "dollar"), ("gold", "wheat")]
 
-    no_150_stop = remove_stopwords(no_numbers, STOPWORDS_150)
-    no_150_vocab = set(no_150_stop)
-    print(f"{'150 stop words':<20}{len(no_150_vocab):>15}")
+    print("\n ***** Single-term queries: original vs compressed *****")
+    for term in singles:
+        s = stem_word(term)
+        a = single_term_query(original_index, term)
+        b = single_term_query(compressed_index, s)
+        print(f"'{term}' (stem '{s}'): original {len(a)} -> compressed {len(b)}")
 
-    stemmed = stem_tokens(no_150_stop)
-    stemmed_vocab = set(stemmed)
-    print(f"{'stemming':<20}{len(stemmed_vocab):>15}")
+    print("\n***** AND queries: original vs compressed *****")
+    for t1, t2 in pairs:
+        a = and_query(original_index, t1, t2)
+        b = and_query(compressed_index, stem_word(t1), stem_word(t2))
+        print(f"'{t1}' AND '{t2}': original {len(a)} -> compressed {len(b)}")
 
-    # Part 2: Build compressed index and re-run the 6 sample queries
-    print("\nBuilding compressed index...")
-    compressed_F = build_compressed_term_docid_list(docs)
-    compressed_sorted_F = sort_and_dedupe(compressed_F)
-    compressed_index = build_index(compressed_sorted_F)
-    print(f"Compressed index: {len(compressed_index)} unique terms")
-
-    print("\n=== Single-term queries (compressed index) ===")
-    for term in ["dollar", "wheat", "gold"]:
-        stemmed_term = stemmer.stem(term)
-        result = single_term_query(compressed_index, stemmed_term)
-        print(f"'{term}' (stemmed: '{stemmed_term}'): {len(result)} documents -> {result[:10]}{'...' if len(result) > 10 else ''}")
-
-    print("\n=== AND queries (compressed index) ===")
-    and_pairs = [("gold", "dollar"), ("wheat", "dollar"), ("gold", "wheat")]
-    for term1, term2 in and_pairs:
-        s1, s2 = stemmer.stem(term1), stemmer.stem(term2)
-        result = and_query(compressed_index, s1, s2)
-        print(f"'{term1}' AND '{term2}' (stemmed: '{s1}' AND '{s2}'): {len(result)} documents -> {result[:10]}{'...' if len(result) > 10 else ''}")
-
-        
+    #Evidence for the discussion: which words collapse into each query stem 
+    vocab = set(t for tokens in folded_lists for t in tokens)
+    print("\n*****Words that map to each query stem *****")
+    for term in singles:
+        s = stem_word(term)
+        print(f"stem '{s}':", sorted(w for w in vocab if stem_word(w) == s))
