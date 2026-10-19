@@ -13,4 +13,8 @@ A Python information-retrieval project that builds and queries an inverted index
 - Reuters corpus files in a root-level data/ directory
   
 # Install the dependency:
-pip install nltk
+pip install nltk 
+
+# To run the project 
+python src/challenge.py   
+
